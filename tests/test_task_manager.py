@@ -1,4 +1,6 @@
 import asyncio
+import math
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -266,11 +268,14 @@ async def test_result_and_error_accessors_return_snapshots():
     assert list(manager.get_errors()) == ["failure"]
 
 
-def test_task_kwargs_use_independent_defaults():
+def test_task_configuration_is_immutable():
     first = Task("first", sample_task)
     second = Task("second", sample_task)
 
-    first.kwargs["result"] = "changed"
+    with pytest.raises(FrozenInstanceError):
+        first.name = "changed"
+    with pytest.raises(TypeError):
+        first.kwargs["result"] = "changed"
 
     assert second.kwargs == {}
 
@@ -278,6 +283,39 @@ def test_task_kwargs_use_independent_defaults():
 def test_task_rejects_negative_timeout():
     with pytest.raises(ValueError, match="timeout"):
         Task("invalid", sample_task, timeout=-1)
+
+
+@pytest.mark.parametrize("timeout", [math.nan, math.inf, -math.inf])
+def test_task_rejects_non_finite_timeout(timeout: float):
+    with pytest.raises(ValueError, match="finite"):
+        Task("invalid", sample_task, timeout=timeout)
+
+
+@pytest.mark.parametrize("timeout", [True, "1"])
+def test_task_rejects_non_numeric_timeout(timeout):
+    with pytest.raises(TypeError, match="finite number"):
+        Task("invalid", sample_task, timeout=timeout)
+
+
+@pytest.mark.parametrize("priority", [True, 1.5, "1"])
+def test_task_rejects_non_integer_priority(priority):
+    with pytest.raises(TypeError, match="priority"):
+        Task("invalid", sample_task, priority=priority)
+
+
+def test_task_rejects_empty_name():
+    with pytest.raises(ValueError, match="name"):
+        Task("", sample_task)
+
+
+def test_task_rejects_non_string_name():
+    with pytest.raises(TypeError, match="name"):
+        Task(1, sample_task)
+
+
+def test_task_rejects_non_callable_func():
+    with pytest.raises(TypeError, match="func"):
+        Task("invalid", None)
 
 
 @pytest.mark.asyncio
@@ -301,6 +339,41 @@ async def test_cancelling_batch_cancels_running_tasks_and_recovers():
         await running
 
     await asyncio.wait_for(cancelled.wait(), timeout=1)
+    assert await manager.run_tasks([]) == {}
+
+
+@pytest.mark.asyncio
+async def test_self_cancelled_task_does_not_leave_sibling_running():
+    sibling_started = asyncio.Event()
+    sibling_cancelled = asyncio.Event()
+    sibling_finished = False
+
+    async def sibling() -> None:
+        nonlocal sibling_finished
+        sibling_started.set()
+        try:
+            await asyncio.Event().wait()
+            sibling_finished = True
+        finally:
+            sibling_cancelled.set()
+
+    async def self_cancel() -> None:
+        await sibling_started.wait()
+        raise asyncio.CancelledError
+
+    manager = TaskManager[None](max_concurrent_tasks=2)
+    tasks = [
+        Task("sibling", sibling, priority=1),
+        Task("self-cancel", self_cancel),
+    ]
+
+    with pytest.raises(asyncio.CancelledError):
+        await manager.run_tasks(tasks)
+
+    await asyncio.wait_for(sibling_cancelled.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert sibling_finished is False
+    assert manager.get_results() == {}
     assert await manager.run_tasks([]) == {}
 
 

@@ -1,8 +1,10 @@
 import asyncio
 import heapq
 import itertools
-from collections.abc import Awaitable, Callable, Iterable
+import math
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Generic, TypeVar
 
 from .exceptions import TaskError, TaskTimeoutError
@@ -10,7 +12,7 @@ from .exceptions import TaskError, TaskTimeoutError
 T = TypeVar("T")
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Task(Generic[T]):
     """非同期タスクと実行条件を表す。"""
 
@@ -19,11 +21,28 @@ class Task(Generic[T]):
     priority: int = 0
     timeout: float | None = None
     args: tuple[Any, ...] = ()
-    kwargs: dict[str, Any] = field(default_factory=dict)
+    kwargs: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.timeout is not None and self.timeout < 0:
-            raise ValueError("timeout must be greater than or equal to 0")
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        if not self.name:
+            raise ValueError("name must not be empty")
+        if not callable(self.func):
+            raise TypeError("func must be callable")
+        if isinstance(self.priority, bool) or not isinstance(self.priority, int):
+            raise TypeError("priority must be an integer")
+        if self.timeout is not None:
+            if isinstance(self.timeout, bool) or not isinstance(
+                self.timeout, (int, float)
+            ):
+                raise TypeError("timeout must be a finite number or None")
+            if not math.isfinite(self.timeout) or self.timeout < 0:
+                raise ValueError(
+                    "timeout must be a finite number greater than or equal to 0"
+                )
+
+        object.__setattr__(self, "kwargs", MappingProxyType(dict(self.kwargs)))
 
 
 class TaskManager(Generic[T]):
@@ -139,7 +158,17 @@ class TaskManager(Generic[T]):
                     self.max_concurrent_tasks,
                     len(self._task_queue),
                 )
-                await asyncio.gather(*(self._run_worker() for _ in range(worker_count)))
+                workers = [
+                    asyncio.create_task(self._run_worker()) for _ in range(worker_count)
+                ]
+                try:
+                    await asyncio.gather(*workers)
+                finally:
+                    # 子タスク自身のキャンセルでも、兄弟ワーカーを残留させない。
+                    for worker in workers:
+                        if not worker.done():
+                            worker.cancel()
+                    await asyncio.gather(*workers, return_exceptions=True)
 
                 if self._errors and raise_on_error:
                     failed_names = ", ".join(self._errors)
