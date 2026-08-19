@@ -86,7 +86,7 @@ print(result)  # 3
 
 ## ライセンス
 
-MIT License 
+MIT License
 
 ## 開発環境
 
