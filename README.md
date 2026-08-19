@@ -23,17 +23,26 @@ pip install asyncx-tools
 ### タスク管理
 
 ```python
+import asyncio
+
 from asyncx import TaskManager, Task
+
+async def fetch_value(value: str) -> str:
+    await asyncio.sleep(0.1)
+    return value
 
 async def main():
     manager = TaskManager()
-    
+
     # タスクの作成
-    task1 = Task("task1", priority=1)
-    task2 = Task("task2", priority=2)
-    
+    task1 = Task("task1", fetch_value, args=("first",), priority=1)
+    task2 = Task("task2", fetch_value, args=("second",), priority=2)
+
     # タスクの実行
-    await manager.run_tasks([task1, task2])
+    results = await manager.run_tasks([task1, task2])
+    print(results)
+
+asyncio.run(main())
 ```
 
 ### 同期処理から非同期処理への変換
@@ -58,6 +67,8 @@ async def main():
 ### 非同期処理から同期処理への変換
 
 ```python
+import asyncio
+
 from asyncx import async_to_sync
 
 # 非同期関数
@@ -65,8 +76,8 @@ async def async_operation(x: int, y: int) -> int:
     await asyncio.sleep(0.1)
     return x + y
 
-# 同期関数に変換
-sync_operation = async_to_sync(async_operation)
+# 同期関数に変換（必要ならタイムアウト秒数を指定可能）
+sync_operation = async_to_sync(async_operation, timeout=1.0)
 
 # 使用例
 result = sync_operation(1, 2)
@@ -76,6 +87,23 @@ print(result)  # 3
 ## ライセンス
 
 MIT License 
+
+## 開発環境
+
+Windows PowerShellでは、リポジトリのルートで次のコマンドを実行します。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+python -m pytest
+```
+
+ソースコード、テスト、サンプルはそれぞれ次の場所にあります。
+
+- ライブラリ: `asyncx/`
+- テスト: `tests/`
+- サンプル: `examples/`
 
 ## 使用する際
 このライブラリを使って作ったプロジェクトをGithubにアップロードする際は、Readmeにこのライブラリについて何か書いといてください()
