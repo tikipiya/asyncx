@@ -3,7 +3,7 @@ import heapq
 import itertools
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any, Generic, Optional, TypeVar
+from typing import Any, Generic, TypeVar
 
 from .exceptions import TaskError, TaskTimeoutError
 
@@ -17,17 +17,13 @@ class Task(Generic[T]):
     name: str
     func: Callable[..., Awaitable[T]]
     priority: int = 0
-    timeout: Optional[float] = None
+    timeout: float | None = None
     args: tuple[Any, ...] = ()
     kwargs: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.timeout is not None and self.timeout < 0:
             raise ValueError("timeout must be greater than or equal to 0")
-
-    def __lt__(self, other: "Task[T]") -> bool:
-        """Task単体の比較では高い優先度を先にする。"""
-        return self.priority > other.priority
 
 
 class TaskManager(Generic[T]):
@@ -49,6 +45,7 @@ class TaskManager(Generic[T]):
         self._results: dict[str, T] = {}
         self._errors: dict[str, Exception] = {}
         self._run_lock = asyncio.Lock()
+        self._is_running = False
 
     def _enqueue(self, task: Task[T]) -> None:
         if task.name in self._queued_names:
@@ -60,6 +57,8 @@ class TaskManager(Generic[T]):
 
     async def add_task(self, task: Task[T]) -> None:
         """タスクを安定した優先度付きキューに追加する。"""
+        if self._is_running:
+            raise RuntimeError("Cannot add tasks while run_tasks() is active")
         self._enqueue(task)
 
     async def run_task(self, task: Task[T]) -> T:
@@ -76,13 +75,12 @@ class TaskManager(Generic[T]):
                             scheduled,
                             timeout=task.timeout,
                         )
-                    except TimeoutError as exc:
+                    except asyncio.TimeoutError as exc:
                         # タスク自身が送出したTimeoutErrorは通常エラーとして扱う。
                         if not scheduled.cancelled():
                             raise
                         raise TaskTimeoutError(
-                            f"Task {task.name} timed out after "
-                            f"{task.timeout} seconds"
+                            f"Task {task.name} timed out after {task.timeout} seconds"
                         ) from exc
 
                 self._results[task.name] = result
@@ -107,7 +105,7 @@ class TaskManager(Generic[T]):
 
     async def run_tasks(
         self,
-        tasks: Optional[Iterable[Task[T]]] = None,
+        tasks: Iterable[Task[T]] | None = None,
         *,
         raise_on_error: bool = True,
     ) -> dict[str, T]:
@@ -118,44 +116,43 @@ class TaskManager(Generic[T]):
         get_errors()から取得できる。
         """
         async with self._run_lock:
-            if tasks is not None:
-                task_list = list(tasks)
-                names = [task.name for task in task_list]
-                if len(names) != len(set(names)):
-                    raise ValueError("Task names must be unique within a batch")
-
-                self._task_queue.clear()
-                self._queued_names.clear()
-                for task in task_list:
-                    self._enqueue(task)
-
-            self._results.clear()
-            self._errors.clear()
-
-            if not self._task_queue:
-                self._queued_names.clear()
-                return {}
-
-            worker_count = min(
-                self.max_concurrent_tasks,
-                len(self._task_queue),
-            )
+            self._is_running = True
             try:
-                await asyncio.gather(
-                    *(self._run_worker() for _ in range(worker_count))
+                if tasks is not None:
+                    task_list = list(tasks)
+                    names = [task.name for task in task_list]
+                    if len(names) != len(set(names)):
+                        raise ValueError("Task names must be unique within a batch")
+
+                    self._task_queue.clear()
+                    self._queued_names.clear()
+                    for task in task_list:
+                        self._enqueue(task)
+
+                self._results.clear()
+                self._errors.clear()
+
+                if not self._task_queue:
+                    return {}
+
+                worker_count = min(
+                    self.max_concurrent_tasks,
+                    len(self._task_queue),
                 )
+                await asyncio.gather(*(self._run_worker() for _ in range(worker_count)))
+
+                if self._errors and raise_on_error:
+                    failed_names = ", ".join(self._errors)
+                    error = TaskError(
+                        f"{len(self._errors)} task(s) failed: {failed_names}"
+                    )
+                    raise error from next(iter(self._errors.values()))
+
+                return dict(self._results)
             finally:
-                self._task_queue.clear()
                 self._queued_names.clear()
-
-            if self._errors and raise_on_error:
-                failed_names = ", ".join(self._errors)
-                error = TaskError(
-                    f"{len(self._errors)} task(s) failed: {failed_names}"
-                )
-                raise error from next(iter(self._errors.values()))
-
-            return dict(self._results)
+                self._task_queue.clear()
+                self._is_running = False
 
     def get_results(self) -> dict[str, T]:
         """現在の成功結果をスナップショットとして取得する。"""
@@ -167,6 +164,8 @@ class TaskManager(Generic[T]):
 
     def clear(self) -> None:
         """キューと実行状態をクリアする。"""
+        if self._is_running:
+            raise RuntimeError("Cannot clear TaskManager while run_tasks() is active")
         self._task_queue.clear()
         self._queued_names.clear()
         self._results.clear()

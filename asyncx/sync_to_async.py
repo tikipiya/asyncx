@@ -1,17 +1,16 @@
 import asyncio
 import contextvars
 import functools
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import TypeVar, Callable, Awaitable, ParamSpec, Optional, cast
+from typing import ParamSpec, TypeVar, cast
 
-T = TypeVar('T')
-P = ParamSpec('P')
+T = TypeVar("T")
+P = ParamSpec("P")
 
 # 呼び出しごとのスレッド生成を避け、実行中イベントループからの変換時に
 # 利用するワーカープールをプロセス内で再利用する。
-_ASYNC_TO_SYNC_EXECUTOR = ThreadPoolExecutor(
-    thread_name_prefix="asyncx-async-to-sync"
-)
+_ASYNC_TO_SYNC_EXECUTOR = ThreadPoolExecutor(thread_name_prefix="asyncx-async-to-sync")
 
 # thread-sensitiveな同期関数は、すべて同じ専用スレッドで逐次実行する。
 _THREAD_SENSITIVE_EXECUTOR = ThreadPoolExecutor(
@@ -19,10 +18,11 @@ _THREAD_SENSITIVE_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="asyncx-thread-sensitive",
 )
 
+
 def sync_to_async(
     func: Callable[P, T],
     thread_sensitive: bool = True,
-    executor: Optional[ThreadPoolExecutor] = None,
+    executor: ThreadPoolExecutor | None = None,
 ) -> Callable[P, Awaitable[T]]:
     """
     同期関数を非同期関数に変換するデコレータ
@@ -39,9 +39,7 @@ def sync_to_async(
         return cast(Callable[P, Awaitable[T]], func)
 
     if thread_sensitive and executor is not None:
-        raise TypeError(
-            "executor cannot be used with thread_sensitive=True"
-        )
+        raise TypeError("executor cannot be used with thread_sensitive=True")
 
     @functools.wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -53,9 +51,7 @@ def sync_to_async(
         context = contextvars.copy_context()
         call = functools.partial(func, *args, **kwargs)
         call_with_context = functools.partial(context.run, call)
-        selected_executor = (
-            _THREAD_SENSITIVE_EXECUTOR if thread_sensitive else executor
-        )
+        selected_executor = _THREAD_SENSITIVE_EXECUTOR if thread_sensitive else executor
         return await loop.run_in_executor(
             selected_executor,
             call_with_context,
@@ -63,10 +59,8 @@ def sync_to_async(
 
     return cast(Callable[P, Awaitable[T]], wrapper)
 
-async def _await_with_timeout(
-    awaitable: Awaitable[T],
-    timeout: Optional[float]
-) -> T:
+
+async def _await_with_timeout(awaitable: Awaitable[T], timeout: float | None) -> T:
     """awaitableを実行し、指定時だけタイムアウトを適用する。"""
     if timeout is None:
         return await awaitable
@@ -74,24 +68,20 @@ async def _await_with_timeout(
     task = asyncio.ensure_future(awaitable)
     try:
         return await asyncio.wait_for(task, timeout=timeout)
-    except TimeoutError as exc:
+    except asyncio.TimeoutError as exc:
         # awaitable自身が送出したTimeoutErrorは変換しない。
         if not task.cancelled():
             raise
-        raise RuntimeError(
-            f"Operation timed out after {timeout} seconds"
-        ) from exc
+        raise RuntimeError(f"Operation timed out after {timeout} seconds") from exc
 
 
-def _run_awaitable(awaitable: Awaitable[T], timeout: Optional[float]) -> T:
+def _run_awaitable(awaitable: Awaitable[T], timeout: float | None) -> T:
     """新しいイベントループでawaitableを最後まで実行する。"""
     return asyncio.run(_await_with_timeout(awaitable, timeout))
 
 
 def async_to_sync(
-    func: Callable[P, Awaitable[T]],
-    *,
-    timeout: Optional[float] = None
+    func: Callable[P, Awaitable[T]], *, timeout: float | None = None
 ) -> Callable[P, T]:
     """
     非同期関数を同期関数に変換するデコレータ
@@ -123,10 +113,7 @@ def async_to_sync(
         # 再利用可能なワーカー上の別イベントループで実行する。
         context = contextvars.copy_context()
         future = _ASYNC_TO_SYNC_EXECUTOR.submit(
-            context.run,
-            _run_awaitable,
-            awaitable,
-            timeout
+            context.run, _run_awaitable, awaitable, timeout
         )
         return future.result()
 

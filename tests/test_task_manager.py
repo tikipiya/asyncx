@@ -114,9 +114,7 @@ async def test_batch_can_collect_errors_without_raising():
 @pytest.mark.asyncio
 async def test_each_batch_resets_results_and_errors():
     manager = TaskManager[str]()
-    await manager.run_tasks(
-        [Task("first", sample_task, args=(0, "first"))]
-    )
+    await manager.run_tasks([Task("first", sample_task, args=(0, "first"))])
     await manager.run_tasks(
         [Task("failure", failing_task)],
         raise_on_error=False,
@@ -125,9 +123,7 @@ async def test_each_batch_resets_results_and_errors():
     assert manager.get_results() == {}
     assert list(manager.get_errors()) == ["failure"]
 
-    results = await manager.run_tasks(
-        [Task("second", sample_task, args=(0, "second"))]
-    )
+    results = await manager.run_tasks([Task("second", sample_task, args=(0, "second"))])
 
     assert results == {"second": "second"}
     assert manager.get_errors() == {}
@@ -148,6 +144,16 @@ async def test_explicit_empty_batch_discards_queued_tasks():
 
     assert results == {}
     assert executed is False
+
+
+@pytest.mark.asyncio
+async def test_previously_added_tasks_run_without_batch_argument():
+    manager = TaskManager[str]()
+    await manager.add_task(Task("queued", sample_task, args=(0, "queued-result")))
+
+    results = await manager.run_tasks()
+
+    assert results == {"queued": "queued-result"}
 
 
 @pytest.mark.asyncio
@@ -231,9 +237,7 @@ async def test_batch_rejects_duplicate_names():
 async def test_task_name_can_be_reused_in_a_later_batch():
     manager = TaskManager[str]()
 
-    first = await manager.run_tasks(
-        [Task("reusable", sample_task, args=(0, "first"))]
-    )
+    first = await manager.run_tasks([Task("reusable", sample_task, args=(0, "first"))])
     second = await manager.run_tasks(
         [Task("reusable", sample_task, args=(0, "second"))]
     )
@@ -245,9 +249,7 @@ async def test_task_name_can_be_reused_in_a_later_batch():
 @pytest.mark.asyncio
 async def test_result_and_error_accessors_return_snapshots():
     manager = TaskManager[str]()
-    await manager.run_tasks(
-        [Task("success", sample_task, args=(0, "value"))]
-    )
+    await manager.run_tasks([Task("success", sample_task, args=(0, "value"))])
 
     results = manager.get_results()
     results["injected"] = "changed"
@@ -276,3 +278,109 @@ def test_task_kwargs_use_independent_defaults():
 def test_task_rejects_negative_timeout():
     with pytest.raises(ValueError, match="timeout"):
         Task("invalid", sample_task, timeout=-1)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_batch_cancels_running_tasks_and_recovers():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def wait_forever() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    manager = TaskManager[None]()
+    running = asyncio.create_task(manager.run_tasks([Task("blocking", wait_forever)]))
+    await started.wait()
+
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+    assert await manager.run_tasks([]) == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_batches_are_serialized():
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def first_task() -> str:
+        first_started.set()
+        await release_first.wait()
+        return "first"
+
+    manager = TaskManager[str]()
+    first_batch = asyncio.create_task(manager.run_tasks([Task("first", first_task)]))
+    await first_started.wait()
+    second_batch = asyncio.create_task(
+        manager.run_tasks([Task("second", sample_task, args=(0, "second"))])
+    )
+    await asyncio.sleep(0)
+
+    assert not second_batch.done()
+    release_first.set()
+    first_result, second_result = await asyncio.gather(
+        first_batch,
+        second_batch,
+    )
+
+    assert first_result == {"first": "first"}
+    assert second_result == {"second": "second"}
+
+
+@pytest.mark.asyncio
+async def test_add_task_is_rejected_during_batch_execution():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_task() -> None:
+        started.set()
+        await release.wait()
+
+    manager = TaskManager[None]()
+    running = asyncio.create_task(manager.run_tasks([Task("blocking", blocking_task)]))
+    await started.wait()
+
+    with pytest.raises(RuntimeError, match="Cannot add tasks"):
+        await manager.add_task(Task("late", blocking_task))
+
+    release.set()
+    await running
+
+
+@pytest.mark.asyncio
+async def test_clear_is_rejected_during_batch_execution():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_task() -> None:
+        started.set()
+        await release.wait()
+
+    manager = TaskManager[None]()
+    running = asyncio.create_task(manager.run_tasks([Task("blocking", blocking_task)]))
+    await started.wait()
+
+    with pytest.raises(RuntimeError, match="Cannot clear TaskManager"):
+        manager.clear()
+
+    release.set()
+    await running
+
+
+@pytest.mark.asyncio
+async def test_clear_resets_queue_results_and_errors_when_idle():
+    manager = TaskManager[str]()
+    await manager.run_task(Task("done", sample_task, args=(0, "value")))
+    await manager.add_task(Task("queued", sample_task, args=(0,)))
+
+    manager.clear()
+
+    assert manager.get_results() == {}
+    assert manager.get_errors() == {}
+    assert await manager.run_tasks() == {}

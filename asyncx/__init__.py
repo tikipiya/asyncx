@@ -1,13 +1,19 @@
-from .task_manager import TaskManager, Task
-from .exceptions import TaskError, TaskTimeoutError
-from .sync_to_async import sync_to_async, async_to_sync
+from importlib.metadata import PackageNotFoundError, version
 
-__version__ = "0.2.0"
+from .exceptions import TaskError, TaskTimeoutError
+from .sync_to_async import async_to_sync, sync_to_async
+from .task_manager import Task, TaskManager
+
+try:
+    __version__ = version("asyncx-tools")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
+
 __all__ = [
-    "TaskManager",
     "Task",
     "TaskError",
+    "TaskManager",
     "TaskTimeoutError",
+    "async_to_sync",
     "sync_to_async",
-    "async_to_sync"
 ]
