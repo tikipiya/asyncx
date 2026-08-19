@@ -27,6 +27,10 @@ async def test_sync_to_async():
     assert result == 3
 
 
+def test_sync_to_async_returns_coroutine_function_unchanged():
+    assert sync_to_async(async_function) is async_function
+
+
 def test_async_to_sync():
     sync_func = async_to_sync(async_function)
 
@@ -43,9 +47,7 @@ async def test_thread_sensitive_calls_use_one_shared_thread():
 
     async_func = sync_to_async(identify_thread, thread_sensitive=True)
 
-    results = await asyncio.gather(
-        *(async_func(value) for value in range(5))
-    )
+    results = await asyncio.gather(*(async_func(value) for value in range(5)))
 
     assert [value for value, _ in results] == list(range(5))
     assert len({thread_id for _, thread_id in results}) == 1
@@ -87,9 +89,11 @@ async def test_non_thread_sensitive_call_uses_custom_executor():
 
 
 def test_thread_sensitive_rejects_custom_executor():
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        with pytest.raises(TypeError, match="thread_sensitive=True"):
-            sync_to_async(sync_function, executor=executor)
+    with (
+        ThreadPoolExecutor(max_workers=1) as executor,
+        pytest.raises(TypeError, match="thread_sensitive=True"),
+    ):
+        sync_to_async(sync_function, executor=executor)
 
 
 @pytest.mark.asyncio
@@ -194,6 +198,20 @@ def test_async_to_sync_timeout_cancels_coroutine():
 def test_async_to_sync_rejects_negative_timeout():
     with pytest.raises(ValueError, match="timeout"):
         async_to_sync(async_function, timeout=-1)
+
+
+def test_async_to_sync_preserves_inner_timeout_error():
+    async def raises_timeout() -> None:
+        raise TimeoutError("from coroutine")
+
+    sync_func = async_to_sync(raises_timeout, timeout=1)
+
+    with pytest.raises(TimeoutError, match="from coroutine"):
+        sync_func()
+
+
+def test_async_to_sync_returns_sync_function_unchanged():
+    assert async_to_sync(sync_function) is sync_function
 
 
 @pytest.mark.asyncio
