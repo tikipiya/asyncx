@@ -68,7 +68,7 @@ async def _await_with_timeout(awaitable: Awaitable[T], timeout: float | None) ->
     task = asyncio.ensure_future(awaitable)
     try:
         return await asyncio.wait_for(task, timeout=timeout)
-    except TimeoutError as exc:
+    except asyncio.TimeoutError as exc:
         # awaitable自身が送出したTimeoutErrorは変換しない。
         if not task.cancelled():
             raise

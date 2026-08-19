@@ -75,7 +75,7 @@ class TaskManager(Generic[T]):
                             scheduled,
                             timeout=task.timeout,
                         )
-                    except TimeoutError as exc:
+                    except asyncio.TimeoutError as exc:
                         # タスク自身が送出したTimeoutErrorは通常エラーとして扱う。
                         if not scheduled.cancelled():
                             raise
