@@ -13,18 +13,24 @@ _ASYNC_TO_SYNC_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="asyncx-async-to-sync"
 )
 
+# thread-sensitiveな同期関数は、すべて同じ専用スレッドで逐次実行する。
+_THREAD_SENSITIVE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="asyncx-thread-sensitive",
+)
+
 def sync_to_async(
     func: Callable[P, T],
     thread_sensitive: bool = True,
-    executor: Optional[ThreadPoolExecutor] = None
+    executor: Optional[ThreadPoolExecutor] = None,
 ) -> Callable[P, Awaitable[T]]:
     """
     同期関数を非同期関数に変換するデコレータ
 
     Args:
         func: 変換対象の同期関数
-        thread_sensitive: スレッドセーフティを考慮するかどうか
-        executor: 使用するThreadPoolExecutor（指定しない場合は新規作成）
+        thread_sensitive: 同期関数を専用の同一スレッドで逐次実行するか
+        executor: thread_sensitive=Falseで使用するカスタムExecutor
 
     Returns:
         非同期関数
@@ -32,23 +38,28 @@ def sync_to_async(
     if asyncio.iscoroutinefunction(func):
         return cast(Callable[P, Awaitable[T]], func)
 
+    if thread_sensitive and executor is not None:
+        raise TypeError(
+            "executor cannot be used with thread_sensitive=True"
+        )
+
     @functools.wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        if thread_sensitive:
-            # スレッドセーフティを考慮する場合
-            loop = asyncio.get_running_loop()
-            current_executor = executor or ThreadPoolExecutor()
-            try:
-                return await loop.run_in_executor(
-                    current_executor,
-                    functools.partial(func, *args, **kwargs)
-                )
-            finally:
-                if executor is None:
-                    current_executor.shutdown(wait=False)
-        else:
-            # スレッドセーフティを考慮しない場合
+        if not thread_sensitive and executor is None:
+            # asyncio.to_threadは呼び出し元のContextを自動的にコピーする。
             return await asyncio.to_thread(func, *args, **kwargs)
+
+        loop = asyncio.get_running_loop()
+        context = contextvars.copy_context()
+        call = functools.partial(func, *args, **kwargs)
+        call_with_context = functools.partial(context.run, call)
+        selected_executor = (
+            _THREAD_SENSITIVE_EXECUTOR if thread_sensitive else executor
+        )
+        return await loop.run_in_executor(
+            selected_executor,
+            call_with_context,
+        )
 
     return cast(Callable[P, Awaitable[T]], wrapper)
 
