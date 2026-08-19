@@ -379,3 +379,6 @@ examples/  実行例
 MIT Licenseです。詳細は[LICENSE](LICENSE)を参照してください。
 
 利用報告や、このライブラリへのリンクは必須ではありませんが歓迎します。
+
+コントリビューション方法は[CONTRIBUTING.md](CONTRIBUTING.md)、脆弱性の報告方法は
+[SECURITY.md](SECURITY.md)を参照してください。
