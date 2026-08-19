@@ -1,6 +1,7 @@
 import asyncio
 import contextvars
 import functools
+import math
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import ParamSpec, TypeVar, cast
@@ -19,9 +20,25 @@ _THREAD_SENSITIVE_EXECUTOR = ThreadPoolExecutor(
 )
 
 
+def _is_async_callable(func: object) -> bool:
+    """通常の非同期関数とasync __call__を持つオブジェクトを判定する。"""
+    return asyncio.iscoroutinefunction(func) or (
+        callable(func) and asyncio.iscoroutinefunction(type(func).__call__)
+    )
+
+
+def _validate_timeout(timeout: float | None) -> None:
+    if timeout is None:
+        return
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise TypeError("timeout must be a finite number or None")
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("timeout must be a finite number greater than or equal to 0")
+
+
 def sync_to_async(
     func: Callable[P, T],
-    thread_sensitive: bool = True,
+    thread_sensitive: bool = False,
     executor: ThreadPoolExecutor | None = None,
 ) -> Callable[P, Awaitable[T]]:
     """
@@ -35,7 +52,7 @@ def sync_to_async(
     Returns:
         非同期関数
     """
-    if asyncio.iscoroutinefunction(func):
+    if _is_async_callable(func):
         return cast(Callable[P, Awaitable[T]], func)
 
     if thread_sensitive and executor is not None:
@@ -93,11 +110,10 @@ def async_to_sync(
     Returns:
         同期関数
     """
-    if not asyncio.iscoroutinefunction(func):
+    if not _is_async_callable(func):
         return cast(Callable[P, T], func)
 
-    if timeout is not None and timeout < 0:
-        raise ValueError("timeout must be greater than or equal to 0")
+    _validate_timeout(timeout)
 
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:

@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,12 @@ async def async_function(x: int, y: int) -> int:
     return x + y
 
 
+class AsyncCallable:
+    async def __call__(self, value: str) -> str:
+        await asyncio.sleep(0)
+        return value
+
+
 @pytest.mark.asyncio
 async def test_sync_to_async():
     async_func = sync_to_async(sync_function)
@@ -31,12 +38,26 @@ def test_sync_to_async_returns_coroutine_function_unchanged():
     assert sync_to_async(async_function) is async_function
 
 
+@pytest.mark.asyncio
+async def test_sync_to_async_returns_async_callable_unchanged():
+    callable_object = AsyncCallable()
+
+    assert sync_to_async(callable_object) is callable_object
+    assert await sync_to_async(callable_object)("value") == "value"
+
+
 def test_async_to_sync():
     sync_func = async_to_sync(async_function)
 
     result = sync_func(1, 2)
 
     assert result == 3
+
+
+def test_async_to_sync_supports_async_callable_object():
+    sync_func = async_to_sync(AsyncCallable())
+
+    assert sync_func("value") == "value"
 
 
 @pytest.mark.asyncio
@@ -69,6 +90,20 @@ async def test_non_thread_sensitive_calls_can_run_in_parallel():
 
 
 @pytest.mark.asyncio
+async def test_sync_to_async_runs_in_parallel_by_default():
+    barrier = threading.Barrier(2)
+
+    def meet_in_parallel() -> int:
+        barrier.wait(timeout=1)
+        return threading.get_ident()
+
+    async_func = sync_to_async(meet_in_parallel)
+    thread_ids = await asyncio.gather(async_func(), async_func())
+
+    assert len(set(thread_ids)) == 2
+
+
+@pytest.mark.asyncio
 async def test_non_thread_sensitive_call_uses_custom_executor():
     def current_thread_name() -> str:
         return threading.current_thread().name
@@ -93,7 +128,7 @@ def test_thread_sensitive_rejects_custom_executor():
         ThreadPoolExecutor(max_workers=1) as executor,
         pytest.raises(TypeError, match="thread_sensitive=True"),
     ):
-        sync_to_async(sync_function, executor=executor)
+        sync_to_async(sync_function, thread_sensitive=True, executor=executor)
 
 
 @pytest.mark.asyncio
@@ -198,6 +233,18 @@ def test_async_to_sync_timeout_cancels_coroutine():
 def test_async_to_sync_rejects_negative_timeout():
     with pytest.raises(ValueError, match="timeout"):
         async_to_sync(async_function, timeout=-1)
+
+
+@pytest.mark.parametrize("timeout", [math.nan, math.inf, -math.inf])
+def test_async_to_sync_rejects_non_finite_timeout(timeout: float):
+    with pytest.raises(ValueError, match="finite"):
+        async_to_sync(async_function, timeout=timeout)
+
+
+@pytest.mark.parametrize("timeout", [True, "1"])
+def test_async_to_sync_rejects_non_numeric_timeout(timeout):
+    with pytest.raises(TypeError, match="finite number"):
+        async_to_sync(async_function, timeout=timeout)
 
 
 def test_async_to_sync_preserves_inner_timeout_error():
