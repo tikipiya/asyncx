@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asyncx-tools"
+version = "0.2.0"
+description = "非同期タスク管理・同期/非同期変換ライブラリ"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "tikisan", email = "s2501082@sendai-nct.jp" },
+]
+dependencies = [
+  "typing-extensions>=4.0.0",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "pytest-timeout>=2.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/tikipiya/asyncx"
+Repository = "https://github.com/tikipiya/asyncx"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["asyncx*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+timeout = 5
