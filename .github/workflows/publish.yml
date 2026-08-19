@@ -3,13 +3,47 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  verify:
+    name: Verify PyPI Trusted Publisher
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/asyncx-tools
+    permissions:
+      id-token: write
+    steps:
+      - name: Exchange OIDC token without publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          audience=$(curl --fail --silent --show-error \
+            https://pypi.org/_/oidc/audience | jq -r .audience)
+          oidc_response=$(curl --fail --silent --show-error \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}")
+          oidc_token=$(jq -er .value <<< "${oidc_response}")
+          echo "::add-mask::${oidc_token}"
+
+          request=$(jq -cn --arg token "${oidc_token}" '{token: $token}')
+          mint_response=$(curl --fail --silent --show-error \
+            -X POST https://pypi.org/_/oidc/mint-token \
+            -H "Content-Type: application/json" \
+            --data "${request}")
+          publish_token=$(jq -er .token <<< "${mint_response}")
+          echo "::add-mask::${publish_token}"
+          test "${publish_token#pypi-}" != "${publish_token}"
+          echo "PyPI Trusted Publisher verified."
+
   build:
     name: Build release distributions
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
